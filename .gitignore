@@ -1,0 +1,88 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Datasets and large files
+data/
+*.ply
+*.pth
+*.pkl
+*.pt
+*.bin
+*.h5
+
+# Outputs and renders
+output/
+renders/
+results/
+
+# Wandb
+wandb/
+runs/
+
+# Checkpoints and model weights
+checkpoints/
+saves/
+*.ckpt
+*.safetensors
+
+# COLMAP
+*.db
+stereo/
+distorted/
+
+# Submodule build artifacts
+submodules/diff-gaussian-rasterization/build/
+submodules/diff-gaussian-rasterization/*.egg-info/
+submodules/simple-knn/build/
+submodules/simple-knn/*.egg-info/
+
+# Tracking-Anything-with-DEVA artifacts
+Tracking-Anything-with-DEVA/Grounded-Segment-Anything/
+Tracking-Anything-with-DEVA/saves/
+
+# SAM / CoTracker weights
+sam2_logs/
+co-tracker/checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Misc
+*.log
+*.tmp
+tmp/
+temp/
