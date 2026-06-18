@@ -48,7 +48,9 @@ runs/
 
 # Checkpoints and model weights
 checkpoints/
+checkpoint/
 saves/
+lerf_mask/
 *.ckpt
 *.safetensors
 
