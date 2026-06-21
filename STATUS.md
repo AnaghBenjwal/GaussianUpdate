@@ -230,3 +230,72 @@ run_cotracker_demo.py                             (CoTracker point tracking — 
 ALGORITHM.md                                      (plain-English algorithm description)
 STATUS.md                                         (this file)
 ```
+
+---
+
+## Day 3 Status — Presentable OpenCV Example — DONE (2026-06-21)
+
+### `scripts/make_final_example.py` — END-TO-END REAL PIPELINE DEMO
+
+**What was built:**
+
+A complete script that generates a clean, presentable before/after example using
+OpenCV inpainting (NOT synthetic pixel-warp), runs the full change-detection pipeline
+on it, and assembles all presentation outputs.
+
+**Approach:**
+1. Load GG model → render canonical "before" frame (986×728 px, cam #0 `frame_00002`)
+2. Pick GG class 42 (68,428 Gaussians, bbox 747→985 × 130→316) — orange/red container object
+3. Generate "after" image:
+   - cv2.inpaint (TELEA, radius 7, 9×9 dilated mask) fills the vacated region
+   - Object pasted at shift (−300, −100) px with Gaussian-blurred alpha (σ=6, ksize=31)
+4. Run `detect_and_update` pipeline:
+   - Diff threshold 25 → 41,238 changed pixels detected
+   - `force_obj_id=42` bypasses auto-class-detection; depth filter ±3σ keeps 68,044/68,428 Gaussians
+   - Template matching: shift recovered exactly as (−300.0, −100.0) px
+   - Back-projection at depth 3.851 units → 3D world displacement (−1.023, −0.198, −1.167)
+   - Displacement applied to 68,044 Gaussians in-place
+5. Re-render shows object at new position (47,037 pixels changed in the new area)
+
+**Key design decision — target the window background:**
+Moving an object to a table-surface region fails visually because dense table Gaussians
+(z≈2–3) are in front of the moved object (z≈3.85) and occlude it entirely.  Targeting the
+window/background area (y < 200 in this camera view) works because background Gaussians
+are at very large depth (z >> 3.85), leaving the moved object in front and visible.
+
+**Key design additions to `detect_and_update.py`:**
+- `force_obj_id` parameter — bypasses change-detection-based class selection
+- Depth outlier filter (±3σ from mean camera-z) on selected Gaussians — prevents
+  scattered noise Gaussians from creating scene-wide rendering artifacts when moved
+
+**Outputs saved to `output/presentation/final_example/`:**
+```
+before.png             (GG render before change — 986×728)
+after_target.png       (OpenCV inpainted after image)
+detected_change_mask.png
+updated_render.png     (GG re-render after Gaussian update)
+comparison_grid.png    (2×2 presentation grid — 2014×1602)
+side_by_side_video.mp4 (7s wipe video before↔updated @ 30fps)
+summary.md             (4-sentence pipeline summary)
+report.json
+```
+
+**Quantitative results:**
+```
+Object:               GG class 42, 68,044 Gaussians (depth-filtered)
+Shift recovered:      (−300.0, −100.0) px  [exact match]
+Depth at object:      3.851 world units
+3D displacement:      (−1.023, −0.198, −1.167) world units
+Pixels changed (new area):  47,037  [object visible at new position]
+Pixels changed (old area):  29,791  [object vacated original position]
+Before→After mean diff:  5.60 px
+After→Updated residual:  8.74 px  (higher than target — known SH artifact)
+```
+
+**Known limitation documented:**
+The re-render residual error is higher than ideal because the Gaussians' spherical
+harmonic (SH) colour coefficients were trained for the original viewing direction.
+Moving Gaussians to a new 3D position causes them to render with incorrect view-dependent
+colours — a fundamental 3DGS editing challenge noted in GaussianEditor (CVPR'24) and
+others.  The position update is geometrically correct; the appearance update would require
+SH coefficient re-optimisation or an anchor-colour approach.

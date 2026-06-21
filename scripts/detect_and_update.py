@@ -321,11 +321,29 @@ def get_changed_gaussian_indices(
     if len(region_ids) == 0:
         raise ValueError("Changed-region mask is empty.")
 
-    unique, counts = np.unique(region_ids, return_counts=True)
-    nonbg = unique > 0          # exclude class 0 (background / invalid)
-    if nonbg.any():
-        unique, counts = unique[nonbg], counts[nonbg]
-    target_obj_id = int(unique[counts.argmax()])
+    # Score classes by the FRACTION of their total image pixels that fall in the
+    # changed region.  A class that moved will have most of its pixels inside the
+    # changed area; a background class has the same density inside and outside.
+    # This correctly picks the moved foreground object over a large background class
+    # even when the background dominates the raw pixel count in the changed region.
+    all_ids, all_counts = np.unique(pred_obj_img, return_counts=True)
+    total_per_class = dict(zip(all_ids.tolist(), all_counts.tolist()))
+
+    unique, counts_in_region = np.unique(region_ids, return_counts=True)
+    scores = {}
+    for cls, cnt in zip(unique.tolist(), counts_in_region.tolist()):
+        if cls > 0:  # skip invalid/background (class 0)
+            total = total_per_class.get(cls, 1)
+            scores[cls] = cnt / total  # fraction of this class captured by the diff
+
+    if not scores:
+        raise ValueError("No non-background classes in changed region.")
+
+    target_obj_id = max(scores, key=scores.get)
+    best_frac = scores[target_obj_id]
+    print(f"    Class selection scores (top 3): "
+          + ", ".join(f"cls {c}={scores[c]:.2f}" for c in
+                      sorted(scores, key=scores.get, reverse=True)[:3]))
 
     # Per-Gaussian class prediction using the classifier's linear transform.
     # _objects_dc shape: (N, 1, 16); permute(2,0,1) → (16, N, 1) which Conv2d
@@ -643,6 +661,7 @@ def detect_and_update(
     sh_degree:        int            = 3,
     dev_env:          str            = "dev",
     use_sam2:         bool           = True,
+    force_obj_id:     Optional[int]  = None,
 ) -> dict:
     """
     Full change-detection and Gaussian update pipeline.
@@ -780,11 +799,36 @@ def detect_and_update(
 
     # ── Step 5: Find the Gaussians that belong to the changed object ────────
     print("[5/8] Identifying changed Gaussians …")
-    gaussian_indices, target_obj_id = get_changed_gaussian_indices(
-        gaussians, classifier, pred_obj_img, mask_before
-    )
+    if force_obj_id is not None:
+        # When the caller already knows which object moved (e.g. from a shared
+        # segmentation step), bypass the heuristic class-selection entirely.
+        target_obj_id = force_obj_id
+        with torch.no_grad():
+            logits3d = classifier(gaussians._objects_dc.permute(2, 0, 1))
+            pred_ids = logits3d.argmax(dim=0).squeeze()
+        all_idx = torch.where(pred_ids == target_obj_id)[0]
+
+        # Filter out depth outliers: keep only Gaussians within ±3σ of the mean
+        # camera-space z.  GG classes often contain scattered "noise" Gaussians
+        # far outside the visible object; moving them causes scene-wide artifacts.
+        with torch.no_grad():
+            xyz_all = gaussians.get_xyz[all_idx]
+            ones    = torch.ones(xyz_all.shape[0], 1, device="cuda")
+            cam_z   = (torch.cat([xyz_all, ones], dim=1) @ view.world_view_transform)[:, 2]
+            z_mean  = cam_z.mean(); z_std = cam_z.std()
+            z_lo    = z_mean - 3.0 * z_std
+            z_hi    = z_mean + 3.0 * z_std
+            valid   = (cam_z >= z_lo) & (cam_z <= z_hi) & (cam_z > 0.0)
+        gaussian_indices = all_idx[valid]
+        print(f"[info] Using forced object class: {target_obj_id}  |  "
+              f"Gaussians selected: {len(gaussian_indices):,} / {len(all_idx):,} "
+              f"(depth filter ±3σ: z∈[{float(z_lo):.2f}, {float(z_hi):.2f}])")
+    else:
+        gaussian_indices, target_obj_id = get_changed_gaussian_indices(
+            gaussians, classifier, pred_obj_img, mask_before
+        )
     if len(gaussian_indices) == 0:
-        raise RuntimeError("No Gaussians matched the changed object — check diff_threshold.")
+        raise RuntimeError("No Gaussians matched the changed object — check diff_threshold or force_obj_id.")
 
     # ── Step 6: Compute 2-D centroid shift ─────────────────────────────────
     # The diff mask alone cannot give us centroids: it is the UNION of the
