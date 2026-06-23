@@ -965,6 +965,8 @@ def parse_args():
     # Model options
     p.add_argument("--num_classes", type=int, default=256)
     p.add_argument("--sh_degree",   type=int, default=3)
+    p.add_argument("--force_obj_id", type=int, default=None,
+                   help="Skip change-detection and use this class ID directly")
     return p.parse_args()
 
 
@@ -986,6 +988,7 @@ if __name__ == "__main__":
         sh_degree        =args.sh_degree,
         dev_env          =args.dev_env,
         use_sam2         =not args.no_sam2,
+        force_obj_id     =args.force_obj_id,
     )
     print("\n=== DONE ===")
     print(f"Modified {report['n_gaussians_modified']:,} Gaussians "
