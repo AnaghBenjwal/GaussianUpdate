@@ -28,49 +28,53 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "scripts" / "sim"))
 from colmap_writer import look_at_c2w, ai2thor_lookat_params, write_colmap_sparse
 
-# ── Scene centre & camera orbit config ───────────────────────────────────────
-# AI2THOR FloorPlan1 centre roughly at (0, 0, 0); objects on tables at Y≈0.9m
-LOOK_TARGET   = np.array([0.0, 0.7, 0.0])   # scene centre, mid-table height
-ORBIT_RADII   = [1.5, 1.8]                  # metres from centre
-AGENT_Y       = 0.9                          # camera height (m)
-EXTRA_Y       = 1.3                          # higher vantage for second orbit
-YAW_STEP      = 30                           # degrees between horizontal shots
-FOV_DEG       = 90.0
-MAX_OBJECTS   = 12                           # max object classes to track
+# ── Config ───────────────────────────────────────────────────────────────────
+LOOK_TARGET  = np.array([0.0, 0.7, 0.0])   # scene centre, mid-table height
+AGENT_Y      = 0.9                          # default agent height (m)
+FOV_DEG      = 90.0
+MAX_OBJECTS  = 12
+# Three pitch angles give ~300 views when combined with all reachable positions
+HORIZONS     = [5.0, 20.0, 35.0]
+
+# Camera 0: canonical front-centre position (closest reachable to this target)
+CAM0_TARGET  = np.array([0.25, AGENT_Y, 1.5])   # preferred cam0 location
 
 
 def fov_to_focal(fov_deg: float, dim: int) -> float:
     return dim / (2.0 * np.tan(np.deg2rad(fov_deg) / 2.0))
 
 
-def build_orbit_cameras(W: int, H: int) -> list[dict]:
+def build_cameras_from_reachable(reachable_positions: list[dict]) -> list[dict]:
     """
-    Return a list of camera dicts:
-        eye, c2w (4×4 OpenGL), yaw_deg, horizon_deg
-    Camera 0 is the canonical view used for before/after.
+    Build camera specs from AI2THOR reachable positions.
+    Camera 0 is the reachable position closest to CAM0_TARGET.
+    Each position gets one camera per HORIZONS angle.
     """
+    pos_arr = np.array([[p['x'], p['y'], p['z']] for p in reachable_positions])
+
+    # Find camera 0: closest reachable position to the preferred location
+    dists = np.linalg.norm(pos_arr - CAM0_TARGET[np.newaxis], axis=1)
+    cam0_idx = int(np.argmin(dists))
+    cam0_pos = reachable_positions[cam0_idx]
+
     cameras = []
 
-    # Camera 0: canonical view (front-centre, level)
-    eye0 = np.array([0.0, AGENT_Y, ORBIT_RADII[0]])
+    # Camera 0 first (canonical view, horizon=HORIZONS[0])
+    eye0 = np.array([cam0_pos['x'], cam0_pos['y'], cam0_pos['z']])
     c2w0 = look_at_c2w(eye0, LOOK_TARGET)
-    yaw0, hor0 = ai2thor_lookat_params(eye0, LOOK_TARGET)
-    cameras.append({"eye": eye0, "c2w": c2w0, "yaw": yaw0, "horizon": hor0})
+    yaw0, _ = ai2thor_lookat_params(eye0, LOOK_TARGET)
+    cameras.append({"eye": eye0, "c2w": c2w0, "yaw": yaw0, "horizon": HORIZONS[0]})
 
-    # Orbital sweeps: two radii × two heights × 12 yaw angles
-    for radius in ORBIT_RADII:
-        for height in [AGENT_Y, EXTRA_Y]:
-            for yaw_step_deg in range(0, 360, YAW_STEP):
-                yaw_rad = np.deg2rad(yaw_step_deg)
-                x = float(radius * np.sin(yaw_rad))
-                z = float(radius * np.cos(yaw_rad))
-                eye = np.array([x, height, z])
-                # Skip the canonical view (already added as camera 0)
-                if np.allclose(eye, eye0):
-                    continue
-                c2w = look_at_c2w(eye, LOOK_TARGET)
-                yaw, hor = ai2thor_lookat_params(eye, LOOK_TARGET)
-                cameras.append({"eye": eye, "c2w": c2w, "yaw": yaw, "horizon": hor})
+    # All other reachable positions (skip the cam0 position)
+    other_indices = [i for i in range(len(reachable_positions)) if i != cam0_idx]
+
+    for i in other_indices:
+        p = reachable_positions[i]
+        eye = np.array([p['x'], p['y'], p['z']])
+        yaw, _ = ai2thor_lookat_params(eye, LOOK_TARGET)
+        for hor in HORIZONS:
+            c2w = look_at_c2w(eye, LOOK_TARGET)
+            cameras.append({"eye": eye, "c2w": c2w, "yaw": yaw, "horizon": hor})
 
     return cameras
 
@@ -78,7 +82,7 @@ def build_orbit_cameras(W: int, H: int) -> list[dict]:
 def collect(scene: str, out_root: Path) -> dict:
     import ai2thor.controller
 
-    out_dir = out_root / scene
+    out_dir = out_root / scene / "env"
     img_dir = out_dir / "images"
     msk_dir = out_dir / "object_mask"
     img_dir.mkdir(parents=True, exist_ok=True)
@@ -104,19 +108,21 @@ def collect(scene: str, out_root: Path) -> dict:
     )
 
     # ── Enumerate objects ────────────────────────────────────────────────────
-    event = controller.step(dict(action="Pass", renderImage=False))
-    objects = event.metadata["objects"]
-    moveable = sorted(
+    event = controller.step(dict(action="GetReachablePositions", renderImage=False))
+    reachable = event.metadata["reachablePositions"]
+    objects   = event.metadata["objects"]
+    moveable  = sorted(
         [o for o in objects if o.get("moveable") or o.get("pickupable")],
         key=lambda o: o["objectId"],
     )[:MAX_OBJECTS]
     obj_to_cls = {o["objectId"]: i + 1 for i, o in enumerate(moveable)}
+    print(f"  Reachable positions: {len(reachable)}")
     print(f"  Moveable objects tracked: {len(moveable)}")
     for o in moveable:
         print(f"    cls={obj_to_cls[o['objectId']]:2d}  {o['objectId']}")
 
     # ── Build camera list ────────────────────────────────────────────────────
-    camera_specs = build_orbit_cameras(W, H)
+    camera_specs = build_cameras_from_reachable(reachable)
     print(f"  Planned cameras: {len(camera_specs)}")
 
     image_names, c2w_list, depth_imgs, rgb_imgs = [], [], [], []
@@ -214,7 +220,7 @@ def _inst_to_mask(inst: np.ndarray, color_map: dict,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--scene", default="FloorPlan1")
-    parser.add_argument("--out", default="data/sim")
+    parser.add_argument("--out", default=str(Path.home() / "Documents" / "dataset"))
     parser.add_argument("--display", default=":99")
     args = parser.parse_args()
 

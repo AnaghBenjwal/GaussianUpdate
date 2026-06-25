@@ -709,10 +709,13 @@ def detect_and_update(
     parser = ArgumentParser()
     lp = ModelParams(parser)
     pp = PipelineParams(parser)
+    # Do NOT pass --eval: with eval=True the scene splits cameras into
+    # train/test (every 8th → test), so cam_idx=0 would skip frame_00000.
+    # Without --eval all 163 cameras are in getTrainCameras(), so cam_idx=0
+    # correctly picks frame_00000 (the canonical before/after view).
     args = parser.parse_args([
         "--model_path",  model_path,
         "--source_path", source_path,
-        "--eval",        # load both train and test cameras
     ])
     dataset  = lp.extract(args)
     pipeline = pp.extract(args)

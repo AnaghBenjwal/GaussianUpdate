@@ -111,13 +111,14 @@ def render_before_after(
         position=new_pos,
     )
     if not move_ev.metadata.get("lastActionSuccess", False):
-        # Fallback: TeleportObject (available in some AI2THOR versions)
+        # Fallback: TeleportObject with forceAction=True (bypasses physics constraints)
         orig_rot = objects[obj_id].get("rotation", {"x": 0, "y": 0, "z": 0})
         move_ev = controller.step(
             action="TeleportObject",
             objectId=obj_id,
             x=new_pos["x"], y=new_pos["y"], z=new_pos["z"],
             rotation=orig_rot,
+            forceAction=True,
         )
     if not move_ev.metadata.get("lastActionSuccess", False):
         controller.stop()
@@ -181,7 +182,7 @@ def _object_pixels(inst: np.ndarray, color_map: dict, obj_id: str) -> np.ndarray
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--scene", default="FloorPlan1")
-    parser.add_argument("--meta", default="data/sim/FloorPlan1/scene_meta.json")
+    parser.add_argument("--meta", default=str(Path.home() / "Documents/dataset/FloorPlan1/env/scene_meta.json"))
     parser.add_argument("--object_idx", type=int, default=0)
     parser.add_argument("--dx", type=float, default=0.3,
                         help="World-space X displacement (metres)")
