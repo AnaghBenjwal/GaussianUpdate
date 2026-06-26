@@ -64,6 +64,18 @@ from scene.gaussian_model import GaussianModel
 from gaussian_renderer import render as gg_render
 from arguments import ModelParams, PipelineParams
 
+# Optional novelty modules — imported lazily so the rest of the file
+# works unchanged when they are not passed by the caller.
+try:
+    from scripts.object_memory import ObjectMemory
+    from scripts.gaussian_lifecycle import GaussianLifecycleManager
+except ImportError:
+    # Running directly from the repo root; fall back to sibling-relative import.
+    _scripts = Path(__file__).resolve().parent
+    sys.path.insert(0, str(_scripts))
+    from object_memory import ObjectMemory
+    from gaussian_lifecycle import GaussianLifecycleManager
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Depth rendering
@@ -662,6 +674,8 @@ def detect_and_update(
     dev_env:          str            = "dev",
     use_sam2:         bool           = True,
     force_obj_id:     Optional[int]  = None,
+    object_memory:    Optional["ObjectMemory"]            = None,
+    lifecycle:        Optional["GaussianLifecycleManager"] = None,
 ) -> dict:
     """
     Full change-detection and Gaussian update pipeline.
@@ -833,6 +847,24 @@ def detect_and_update(
     if len(gaussian_indices) == 0:
         raise RuntimeError("No Gaussians matched the changed object — check diff_threshold or force_obj_id.")
 
+    # ── ObjectMemory: associate detection with persistent object registry ────
+    # Compute mean world-space position for position_history.
+    _mem_obj_id    = None
+    _commit_update = True   # default: always commit (legacy behaviour)
+    if object_memory is not None:
+        with torch.no_grad():
+            mean_xyz = gaussians.get_xyz[gaussian_indices].mean(dim=0).cpu().tolist()
+        _mem_obj_id, _is_new = object_memory.associate(
+            gaussian_indices = gaussian_indices,
+            semantic_label   = str(target_obj_id),
+            frame_idx        = cam_idx,
+            position_xyz     = mean_xyz,
+        )
+        _commit_update = object_memory.should_commit(_mem_obj_id)
+        print(f"    ObjectMemory: id={_mem_obj_id}  "
+              f"conf={object_memory.get_entry(_mem_obj_id)['confidence']:.2f}  "
+              f"new={_is_new}  commit={_commit_update}")
+
     # ── Step 6: Compute 2-D centroid shift ─────────────────────────────────
     # The diff mask alone cannot give us centroids: it is the UNION of the
     # vacated and arrival areas, whose centroids are on opposite sides of the
@@ -872,8 +904,26 @@ def detect_and_update(
 
     # ── Step 8: Apply displacement and render the updated model ─────────────
     print("[7/8] Applying displacement to Gaussians and re-rendering …")
-    with torch.no_grad():
-        gaussians._xyz.data[gaussian_indices] += delta_world.float()
+
+    # ObjectMemory gate: only move Gaussians if the object is confirmed
+    if not _commit_update:
+        print(f"    ObjectMemory: confidence below threshold — skipping Gaussian update "
+              f"(object will be committed once seen >{int(1/ObjectMemory.CONFIDENCE_INCREMENT)} times)")
+    else:
+        with torch.no_grad():
+            gaussians._xyz.data[gaussian_indices] += delta_world.float()
+
+        # GaussianLifecycle: register on first commit, update_seen on subsequent ones
+        if lifecycle is not None:
+            existing_ids = [eid for eid, e in lifecycle.entries.items()
+                            if e.get("object_id") == _mem_obj_id]
+            if existing_ids:
+                lifecycle.update_seen(existing_ids[0], frame_idx=cam_idx)
+            else:
+                lifecycle.register(gaussian_indices, frame_idx=cam_idx,
+                                   object_id=_mem_obj_id)
+            lifecycle.tick(current_frame=cam_idx)
+            print(f"    Lifecycle: {lifecycle.summary().splitlines()[0]}")
 
     updated_rgb, _ = render_frame(
         view, gaussians, pipeline, bg_color, classifier, num_classes
