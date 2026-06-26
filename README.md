@@ -1,82 +1,165 @@
-# Gaussian Grouping [ECCV'24]
+# GaussianUpdate
 
-> [**Gaussian Grouping: Segment and Edit Anything in 3D Scenes**](https://arxiv.org/abs/2312.00732)           
-> [[Project Page]](https://ymq2017.github.io/gaussian-grouping)           
-> ECCV 2024  
-> ETH Zurich
+A system for updating 3D Gaussian Splatting scene representations from 2D observations. When an object moves in the real world, the pipeline detects the change from a single new RGB image, identifies the responsible Gaussians, estimates the 3D displacement, and updates the model — without retraining.
 
-We propose Gaussian Grouping, which extends Gaussian Splatting to jointly **reconstruct** and **segment** anything in open-world 3D scenes via **lifting 2D SAM**. It also efficiently supports versatile 3D scene **editing** tasks. Refer to our [paper](https://arxiv.org/abs/2312.00732) for more details.
+Built on top of [Gaussian Grouping (ECCV'24)](https://github.com/lkeab/gaussian-grouping) and evaluated on AI2THOR synthetic indoor scenes.
 
-<img width="1000" alt="image" src='media/teaser_github_demo.gif'>
+---
 
-Updates
------------------
-:fire::fire: 2024/01/16: We released the [LERF-Mask dataset](docs/dataset.md) and evaluation code.
+## What it does
 
-2024/01/06: We released the [3D Object Removal & Inpainting](docs/edit_removal_inpaint.md) code.
+1. **Train** a Gaussian Grouping model on a scene — learns a 3D splat with per-Gaussian object identity
+2. **Detect** what changed between the trained scene and a new image — via pixel diff + template matching or SAM2 + CoTracker
+3. **Update** — back-projects the 2D shift to 3D, moves the Gaussian cluster, re-renders
 
-2023/12/20: We released the [Install Notes](docs/install.md) and [Training & Rendering](docs/train.md) code.
+---
 
+## Repository Structure
 
-# Introduction
-The recent Gaussian Splatting achieves high-quality and real-time novel-view synthesis of the 3D scenes. However, it is solely concentrated on the appearance and geometry modeling, while lacking in fine-grained object-level scene understanding. To address this issue, we propose Gaussian Grouping, which extends Gaussian Splatting to jointly reconstruct and segment anything in open-world 3D scenes. We augment each Gaussian with a compact Identity Encoding, allowing the Gaussians to be grouped according to their object instance or stuff membership in the 3D scene. Instead of resorting to expensive 3D labels, we supervise the Identity Encodings during the differentiable rendering by leveraging the 2D mask predictions by SAM, along with introduced 3D spatial consistency regularization. Comparing to the implicit NeRF representation, we show that the discrete and grouped 3D Gaussians can reconstruct, segment and edit anything in 3D with high visual quality, fine granularity and efficiency. Based on Gaussian Grouping, we further propose a local Gaussian Editing scheme, which shows efficacy in versatile scene editing applications, including 3D object removal, inpainting, colorization and scene recomposition.
-
-<img width="1096" alt="image" src='media/github_method.png'>
-
-# Application Overview
-**Local Gaussian Editing scheme**: Grouped Gaussians after training. Each group represents a specific instance / stuff of the 3D scene and can be fully decoupled.
-<img width="1096" alt="image" src='media/editing_operation.png'>
-
-## 3D Object Removal
-Our Gaussian Grouping can remove the large-scale objects on the Tanks & Temples dataset, from the whole 3D scene with greatly reduced artifacts. Zoom for better view.
-
-https://github.com/lkeab/gaussian-grouping/assets/17427852/f3b0f964-a610-49ab-8332-f2caa64fbf45
-
-## 3D Object Inpainting
-Comparison on 3D object inpainting cases, where SPIn-NeRF requires 5h training while our method with better inpainting quality only needs 1 hour training and 20 minutes tuning.
-
-https://github.com/lkeab/gaussian-grouping/assets/17427852/9f5050da-6a50-4a5f-a755-3bdc55eab1bc
-
-https://github.com/lkeab/gaussian-grouping/assets/17427852/3ed0203c-0047-4333-8bf0-0c10f5a078d1
-
-## 3D Object Style Transfer
-Comparison on 3D object style transfer cases, Our Gaussian Grouping produces more coherent and natural transfer results across views, with faithfully preserved background.
-
-https://github.com/lkeab/gaussian-grouping/assets/17427852/2f00eab5-590b-4295-bb1c-2076acc63d4a
-
-## 3D Open-world Segmentation
-Our Gaussian Grouping approach jointly reconstructs and segments anything in full open-world 3D scenes. The masks predicted by Gaussian Grouping contains much sharp and accurate boundary than LERF.
-
-https://github.com/lkeab/gaussian-grouping/assets/60028943/38241b99-1497-4a7c-bd22-5b018b85548c
-
-
-
-## 3D Multi-Object Editing
-Our Gaussian Grouping approach jointly reconstructs and segments anything in full open-world 3D scenes. Then we concurrently perform 3D object editing for several objects.
-
-https://github.com/lkeab/gaussian-grouping/assets/17427852/d9638a1c-1569-4c72-91b9-ee68e9e017e5
-
-# Installation
-You can refer to the [install document](./docs/install.md) to build the Python environment.
-
-# Training and Masks Rendering
-Then refer to the [train document](./docs/train.md) to train your own scene.
-
-# Open-Vocabulary Segmentation
-For evaluation on the **LERF-Mask dataset** proposed in our paper, you can refer to the [dataset document](./docs/dataset.md).
-
-# 3D Object Removal and Inpainting
-You can select the 3D object for removal and inpainting after training. Details are in the [edit removal inpaint document](./docs/edit_removal_inpaint.md).
-
-
-Citation
----------------
-If you find Gaussian Grouping useful in your research or refer to the provided baseline results, please star :star: this repository and consider citing :pencil::
 ```
-@inproceedings{gaussian_grouping,
-    title={Gaussian Grouping: Segment and Edit Anything in 3D Scenes},
-    author={Ye, Mingqiao and Danelljan, Martin and Yu, Fisher and Ke, Lei},
-    booktitle={ECCV},
-    year={2024}
-}
+train.py                         GG training script
+render.py                        Render trained model
+metrics.py                       PSNR/SSIM evaluation
+convert.py                       COLMAP format conversion
+
+arguments/                       Training/model argument definitions
+gaussian_renderer/               3DGS renderer (diff-gaussian-rasterization)
+scene/                           Scene loading, COLMAP reader, GaussianModel
+utils/                           Camera, graphics, loss, SH utilities
+submodules/                      CUDA extensions (diff-gaussian-rasterization, simple-knn)
+
+config/
+  gaussian_dataset/train.json    Standard GG training config
+  sim/train_30k.json             AI2THOR scene training config (32 classes, 30k iters)
+
+script/
+  train.sh                       Training wrapper: bash script/train.sh <scene> <gpu>
+
+scripts/
+  detect_and_update.py           Core inference: pixel-diff → template match → Gaussian update
+  track_and_update.py            SAM2 + CoTracker variant (video input)
+  cotracker_track.py             CoTracker3 subprocess runner (dev env)
+  sam2_segment.py                SAM2 image segmentation helper (dev env)
+  lama_inpaint.py                LaMa deep inpainting helper (dev env)
+  run_batch_experiment.py        Automated 25-trial batch runner
+  make_final_example.py          End-to-end demo using OpenCV inpainting
+  make_cotracker_example.py      End-to-end demo using SAM2 + CoTracker
+  make_lama_example.py           End-to-end demo using LaMa inpainting
+  sim/
+    collect_data.py              Collect multi-view images + COLMAP from AI2THOR
+    before_after.py              Generate GT before/after pairs via object teleport
+    colmap_writer.py             Write AI2THOR camera params to COLMAP binary format
+    eval_experiment.py           Single-trial eval: detect + update + PSNR/SSIM
+    collect_scene_and_trials.py  Automated full-scene data collection + 5 trials
+    run_5_trials.sh              Run eval on 5 pre-captured trials
+    run_batch_experiments.sh     25-trial batch runner (AI2THOR scenes)
+    summarize_batch.py           Aggregate metrics → table / CSV / panel image
+
+STATUS.md                        Full project status, methodology, results, future work
+ALGORITHM.md                     Plain-English pipeline description
 ```
+
+---
+
+## Dataset
+
+Three AI2THOR kitchen scenes collected and stored in `dataset/`:
+
+| Scene | Training images | Trials |
+|---|---|---|
+| FloorPlan1 | 484 | apple, book, bowl, bread, coffeemachine |
+| FloorPlan2 | 475 | bowl, bread, cellphone, coffeemachine, dishsponge |
+| FloorPlan3 | 343 | apple, bowl, bread, coffeemachine, cup |
+
+Each scene contains: RGB frames, per-frame object masks, COLMAP sparse model, and 5 before/after displacement trial pairs with ground-truth pixel shift in `meta.json`.
+
+---
+
+## Trained Models
+
+| Scene | Iterations | Location |
+|---|---|---|
+| FloorPlan1 | 30,000 | `output/sim/FloorPlan1/point_cloud/iteration_30000/` |
+
+---
+
+## Eval Results — FloorPlan1 (iter 30000)
+
+| Object | GT shift | Loc. Error | PSNR | SSIM |
+|---|---|---|---|---|
+| apple | (−48.9, +3.1) px | 49.0 px | 19.15 dB | 0.874 |
+| book | (−73.4, +8.3) px | 122.9 px | 18.63 dB | 0.856 |
+| bowl | (−16.5, +0.5) px | 16.5 px | 19.16 dB | 0.874 |
+| bread | (−34.8, +1.7) px | 34.9 px | 19.07 dB | 0.872 |
+| coffeemachine | (−22.6, +4.1) px | 178.8 px | 18.86 dB | 0.865 |
+| **Mean** | | **80.4 px** | **18.97 dB** | **0.868** |
+
+Render quality is consistent (~19 dB PSNR). Localisation errors on 3/5 objects stem from domain gap between the GG splat render and the AI2THOR ground-truth image. See `STATUS.md` for diagnosis and proposed fixes.
+
+---
+
+## Setup
+
+Two conda environments are required:
+
+**`gaussian_grouping`** — GG training and inference (Python 3.8)
+```bash
+conda create -n gaussian_grouping python=3.8
+pip install torch==2.4.1+cu118 torchvision --index-url https://download.pytorch.org/whl/cu118
+pip install plyfile wandb lpips scipy opencv-python scikit-learn
+pip install --no-build-isolation submodules/diff-gaussian-rasterization
+pip install --no-build-isolation submodules/simple-knn
+```
+
+**`dev`** — SAM2, CoTracker, AI2THOR data collection (Python 3.10)
+```bash
+conda create -n dev python=3.10
+pip install torch torchvision
+pip install ai2thor
+pip install git+https://github.com/facebookresearch/sam2.git
+pip install git+https://github.com/facebookresearch/co-tracker
+pip install opencv-python-headless
+```
+
+Weights required:
+- `weights/sam2/sam2.1_hiera_large.pt` (857 MB) — [SAM2 releases](https://github.com/facebookresearch/sam2/releases)
+- `weights/cotracker/cotracker3_scaled_online.pth` (97 MB) — [CoTracker releases](https://github.com/facebookresearch/co-tracker/releases)
+
+---
+
+## Quick Start
+
+**Collect data for a new scene:**
+```bash
+conda run -n dev python scripts/sim/collect_scene_and_trials.py \
+    --scene FloorPlan1 --out dataset/
+```
+
+**Train:**
+```bash
+conda run -n gaussian_grouping python train.py \
+    -s dataset/FloorPlan1/env \
+    -m output/sim/FloorPlan1 \
+    --config_file config/sim/train_30k.json
+```
+
+**Run 5-trial eval:**
+```bash
+bash scripts/sim/run_5_trials.sh 30000
+```
+
+**Run single inference:**
+```bash
+conda run -n gaussian_grouping python scripts/detect_and_update.py \
+    --model_path output/sim/FloorPlan1 \
+    --source_path dataset/FloorPlan1/env \
+    --cam_idx 0 \
+    --after_image_path /path/to/after.png \
+    --output output/result/
+```
+
+---
+
+## Acknowledgements
+
+Built on [Gaussian Grouping](https://github.com/lkeab/gaussian-grouping) (Ye et al., ECCV 2024) and [3D Gaussian Splatting](https://github.com/graphdeco-inria/gaussian-splatting) (Kerbl et al., SIGGRAPH 2023).
