@@ -135,7 +135,7 @@ def _write_points3d_bin(path: Path,
 def depth_to_world_points(depth: np.ndarray, rgb: np.ndarray,
                           c2w: np.ndarray,
                           fx: float, fy: float, cx: float, cy: float,
-                          subsample: int = 10,
+                          subsample: int = 4,
                           max_depth: float = 8.0) -> tuple[np.ndarray, np.ndarray]:
     """
     Back-project subsampled depth image pixels to world-space points.
@@ -195,14 +195,14 @@ def write_colmap_sparse(
         for depth, rgb, c2w in zip(depth_images, rgb_images, c2w_matrices):
             xyz, col = depth_to_world_points(
                 depth, rgb, c2w, fx, fy, cx, cy,
-                subsample=12, max_depth=max_depth
+                subsample=4, max_depth=max_depth
             )
             all_xyz.append(xyz)
             all_rgb.append(col)
         all_xyz = np.concatenate(all_xyz, axis=0)
         all_rgb = np.concatenate(all_rgb, axis=0)
-        if len(all_xyz) > 50_000:
-            idx = np.random.choice(len(all_xyz), 50_000, replace=False)
+        if len(all_xyz) > 300_000:
+            idx = np.random.choice(len(all_xyz), 300_000, replace=False)
             all_xyz = all_xyz[idx]; all_rgb = all_rgb[idx]
         _write_points3d_bin(sparse_dir / "points3D.bin", all_xyz, all_rgb)
         print(f"  points3D: {len(all_xyz):,} back-projected points")
