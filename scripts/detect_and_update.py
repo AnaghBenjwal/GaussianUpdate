@@ -662,6 +662,8 @@ def detect_and_update(
     dev_env:          str            = "dev",
     use_sam2:         bool           = True,
     force_obj_id:     Optional[int]  = None,
+    use_dino_raft:    bool           = False,
+    dino_threshold:   float          = 0.8,
 ) -> dict:
     """
     Full change-detection and Gaussian update pipeline.
@@ -790,14 +792,25 @@ def detect_and_update(
 
     # ── Step 4: Detect the changed region ──────────────────────────────────
     print("[4/8] Detecting changed region …")
-    sam2_helper = str(ROOT / "scripts" / "sam2_segment.py")
-    mask_before, mask_after = detect_changed_region(
-        before_rgb, after_rgb,
-        diff_thresh =diff_threshold,
-        sam2_helper =sam2_helper if use_sam2 else None,
-        output_dir  =output_dir,
-        dev_env     =dev_env,
-    )
+    dino_change_mask = None  # kept for reuse in step 6 when use_dino_raft=True
+
+    if use_dino_raft:
+        from scripts.dino_raft import detect_changed_region_dino
+        dino_change_mask = detect_changed_region_dino(
+            before_rgb, after_rgb,
+            similarity_threshold=dino_threshold,
+        )
+        mask_before = dino_change_mask
+        mask_after  = dino_change_mask
+    else:
+        sam2_helper = str(ROOT / "scripts" / "sam2_segment.py")
+        mask_before, mask_after = detect_changed_region(
+            before_rgb, after_rgb,
+            diff_thresh =diff_threshold,
+            sam2_helper =sam2_helper if use_sam2 else None,
+            output_dir  =output_dir,
+            dev_env     =dev_env,
+        )
     print(f"    Changed pixels: {mask_before.sum():,}")
 
     # ── Step 5: Find the Gaussians that belong to the changed object ────────
@@ -834,30 +847,37 @@ def detect_and_update(
         raise RuntimeError("No Gaussians matched the changed object — check diff_threshold or force_obj_id.")
 
     # ── Step 6: Compute 2-D centroid shift ─────────────────────────────────
-    # The diff mask alone cannot give us centroids: it is the UNION of the
-    # vacated and arrival areas, whose centroids are on opposite sides of the
-    # object, not at the before/after object centres.
-    #
-    # Strategy (in priority order):
-    #   A. SAM2 mask on after-image  → centroid of SAM2 mask (most accurate)
-    #   B. Template matching          → match before-object crop in after-image
-    #   C. Diff midpoint heuristic    → 2×(centroid(diff) − centroid(before_obj))
     print("[6/8] Computing displacement …")
     mask_obj_before = (pred_obj_img == target_obj_id).astype(np.uint8)
     centroid_b = mask_centroid(mask_obj_before)   # centroid of object in before render
 
-    # Strategy A: SAM2 gives a mask on the after-image
-    sam2_gave_after_mask = (mask_after is not mask_before)  # True if SAM2 ran
-    if sam2_gave_after_mask and mask_after.sum() > 100:
-        centroid_a = mask_centroid(mask_after)
-        print(f"    Centroid method: SAM2 mask on after-image")
-    else:
-        # Strategy B: template matching
-        print("    Centroid method: template matching (SAM2 not available)")
-        shift_x, shift_y = estimate_2d_shift_template(
-            before_rgb, after_rgb, mask_obj_before
+    if use_dino_raft:
+        # RAFT optical flow: median flow over (DINO change mask ∩ GG object mask).
+        # Fall back to GG-only mask if the intersection is too sparse.
+        from scripts.dino_raft import estimate_displacement_raft
+        if dino_change_mask is not None:
+            combined = (mask_obj_before > 0) & (dino_change_mask > 0)
+            raft_mask = combined.astype(np.uint8) if combined.sum() > 50 else mask_obj_before
+        else:
+            raft_mask = mask_obj_before
+        dx, dy, raft_conf, _ = estimate_displacement_raft(
+            before_rgb, after_rgb, raft_mask
         )
-        centroid_a = (centroid_b[0] + shift_x, centroid_b[1] + shift_y)
+        centroid_a = (centroid_b[0] + dx, centroid_b[1] + dy)
+        print(f"    Centroid method: RAFT optical flow  (confidence={raft_conf:.3f})")
+    else:
+        # Strategy A: SAM2 gives a mask on the after-image
+        sam2_gave_after_mask = (mask_after is not mask_before)  # True if SAM2 ran
+        if sam2_gave_after_mask and mask_after.sum() > 100:
+            centroid_a = mask_centroid(mask_after)
+            print(f"    Centroid method: SAM2 mask on after-image")
+        else:
+            # Strategy B: template matching
+            print("    Centroid method: template matching (SAM2 not available)")
+            shift_x, shift_y = estimate_2d_shift_template(
+                before_rgb, after_rgb, mask_obj_before
+            )
+            centroid_a = (centroid_b[0] + shift_x, centroid_b[1] + shift_y)
 
     px_shift = (centroid_a[0] - centroid_b[0], centroid_a[1] - centroid_b[1])
     print(f"    2-D centroid shift: ({px_shift[0]:+.1f}, {px_shift[1]:+.1f}) px")
@@ -959,11 +979,17 @@ def parse_args():
 
     # Detection options
     p.add_argument("--diff_threshold", type=float, default=25.0,
-                   help="Pixel-diff threshold for change detection")
+                   help="Pixel-diff threshold for change detection (pixel-diff mode only)")
     p.add_argument("--no_sam2",     action="store_true",
                    help="Skip SAM2 refinement (use pixel diff mask only)")
     p.add_argument("--dev_env",     default="dev",
                    help="Conda env name that has SAM2 installed")
+    p.add_argument("--use_dino_raft", action="store_true",
+                   help="Use DINOv2 change detection + RAFT optical flow instead of "
+                        "pixel-diff + template matching")
+    p.add_argument("--dino_threshold", type=float, default=0.8,
+                   help="DINOv2 patch cosine-similarity threshold (0–1); lower = more "
+                        "sensitive to change (default 0.8)")
 
     # Model options
     p.add_argument("--num_classes", type=int, default=256)
@@ -992,6 +1018,8 @@ if __name__ == "__main__":
         dev_env          =args.dev_env,
         use_sam2         =not args.no_sam2,
         force_obj_id     =args.force_obj_id,
+        use_dino_raft    =args.use_dino_raft,
+        dino_threshold   =args.dino_threshold,
     )
     print("\n=== DONE ===")
     print(f"Modified {report['n_gaussians_modified']:,} Gaussians "
