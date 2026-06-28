@@ -32,8 +32,8 @@ from colmap_writer import look_at_c2w, ai2thor_lookat_params, write_colmap_spars
 AGENT_Y      = 0.9                          # default agent height (m)
 FOV_DEG      = 90.0
 MAX_OBJECTS  = 12
-# Four pitch angles: add 50° for close-up tabletop detail
-HORIZONS     = [5.0, 20.0, 35.0, 50.0]
+# Steeper downward angles for close-up tabletop object capture
+HORIZONS     = [0.0, 20.0, 40.0, 60.0]
 
 
 def fov_to_focal(fov_deg: float, dim: int) -> float:
@@ -103,11 +103,11 @@ def build_cameras_from_reachable(
     return cameras, eye0  # also return cam0 eye for metadata
 
 
-def collect(scene: str, out_root: Path, max_dist: float | None = 2.5) -> dict:
+def collect(scene: str, out_root: Path, max_dist: float | None = 1.2) -> dict:
     """
     max_dist: only use reachable positions within this many metres of the object
-              cluster centre. None = use all positions (original behaviour).
-              Default 2.5 gives close-up views focused on the objects.
+              cluster centre. 1.2m keeps cameras close to objects so their
+              features are large and clearly resolved in the image.
     """
     import ai2thor.controller
 
@@ -117,7 +117,7 @@ def collect(scene: str, out_root: Path, max_dist: float | None = 2.5) -> dict:
     img_dir.mkdir(parents=True, exist_ok=True)
     msk_dir.mkdir(parents=True, exist_ok=True)
 
-    W, H = 640, 480
+    W, H = 1920, 1080
     fx = fy = fov_to_focal(FOV_DEG, W)
     cx, cy = W / 2.0, H / 2.0
 
@@ -250,12 +250,14 @@ def _inst_to_mask(inst: np.ndarray, color_map: dict,
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scene", default="FloorPlan1")
-    parser.add_argument("--out", default=str(Path.home() / "Documents" / "dataset"))
-    parser.add_argument("--display", default=":99")
+    parser.add_argument("--scene",    default="FloorPlan1")
+    parser.add_argument("--out",      default=str(Path.home() / "Documents" / "dataset_1080p"))
+    parser.add_argument("--max_dist", type=float, default=1.2,
+                        help="Max camera distance from object cluster centre (m)")
+    parser.add_argument("--display",  default=":99")
     args = parser.parse_args()
 
     if "DISPLAY" not in os.environ:
         os.environ["DISPLAY"] = args.display
 
-    collect(scene=args.scene, out_root=Path(args.out))
+    collect(scene=args.scene, out_root=Path(args.out), max_dist=args.max_dist)
