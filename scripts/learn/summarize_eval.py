@@ -36,8 +36,15 @@ DESC = {
     "sam": "SAM outline of the appeared object, contact point on the base plane",
     "rc": "global differential render-and-compare (V2 baseline)",
     "agree": "ablation winner: consensus of {raft_crop, roma, depth, sam} overrides rc when they disagree > 5 cm",
+    "inerf": "[lit] iNeRF (IROS 2021): gradient descent on the object translation through the GG renderer, photometric loss",
+    "lg_pnp": "[lit] DISK+LightGlue (ICCV 2023) matches + GG depth + PnP-RANSAC (pose step of 3DGS-CD, RA-L 2025)",
+    "roma_pnp": "[lit] RoMa (CVPR 2024) matches + GG depth + PnP-RANSAC",
+    "cotracker": "[lit] CoTracker3 (2024) point tracks + support-plane lifting + RANSAC",
+    "icp": "[lit] point-to-point ICP: GG-depth object points vs SAM mask + Depth Anything V2 points of the AFTER photo",
+    "mast3r": "[lit] MASt3R (ECCV 2024): metric depth (scaled to GG) + object matches, 3D differences + RANSAC",
 }
-HAND = ["no_update", "P1", "P2", "raft_orig", "raft_crop", "roma", "depth", "sam", "rc", "agree"]
+LIT = ["inerf", "lg_pnp", "roma_pnp", "cotracker", "icp", "mast3r"]
+HAND = ["no_update", "P1", "P2"] + LIT + ["raft_orig", "raft_crop", "roma", "depth", "sam", "rc", "agree"]
 
 
 def load_set(tag, bench):
@@ -53,6 +60,12 @@ def load_set(tag, bench):
                                                             timing=r["timing"])
             for m, e in r["est"].items():
                 E[k][m] = e
+        bp = sd / "eval_baselines.jsonl"
+        if bp.exists():
+            for l in open(bp):
+                r = json.loads(l); k = (r["scene"], r["trial"], r["view"])
+                E[k].update(r["est"])
+                META.setdefault(k, {}).setdefault("timing", {}).update(r["timing"])
         for run in args.runs:
             lp = sd / f"eval_learned_{run}.jsonl"
             if lp.exists():
@@ -67,6 +80,11 @@ def load_set(tag, bench):
             if E[k].get(f"{L_}+rc") is not None and E[k].get("agree") is not None:
                 a, d = np.asarray(E[k]["agree"]), np.asarray(E[k][L_])
                 E[k][f"agree→{L_}+rc"] = E[k][f"{L_}+rc"] if np.hypot(*(a - d)[[0, 2]]) > 0.10 else E[k]["agree"]
+            if E[k].get(f"{L_}+rc") is not None and "cotracker" in E[k]:  # added after the T2 baseline run, same 10 cm
+                c, d = E[k]["cotracker"], np.asarray(E[k][L_])
+                E[k][f"cotracker/{L_}+rc"] = E[k][f"{L_}+rc"] if c is None else c
+                E[k][f"cotracker→{L_}+rc"] = (E[k][f"{L_}+rc"] if c is None or np.hypot(*(np.asarray(c) - d)[[0, 2]]) > 0.10
+                                              else c)
     for run in args.runs:                                     # learned model on simulator inputs (no GG)
         pp = Path(args.data) / "runs" / run / f"pred_{tag}_sim.jsonl"
         if pp.exists():
@@ -117,7 +135,9 @@ L += ["Methods:", ""] + [f"- **{k}**: {v}" for k, v in DESC.items()] + [
     "- **<model>**: DispNet prediction; **<model>+rc**: local render-and-compare (±8 cm) started at it; "
     "**agree+<model>**: agree rule with DispNet as a fifth cue; **gate_<model>**: DispNet when its predicted "
     "uncertainty is < 3 cm, else agree; **agree→<model>+rc**: agree, unless DispNet disagrees with it by > 10 cm "
-    "(planar), then <model>+rc.", ""]
+    "(planar), then <model>+rc; **cotracker/<model>+rc**: CoTracker3, or <model>+rc when it gives no answer; "
+    "**cotracker→<model>+rc**: CoTracker3, unless it gives no answer or disagrees with DispNet by > 10 cm (planar), "
+    "then <model>+rc (both added after the T2 baseline run; threshold reused, not tuned).", ""]
 rows_all = []
 for tag, bench, title in (("test_t1", args.benches[0], "T1 — original benchmark (37 moves, 1 input view each; methods were tuned on it)"),
                           ("test_t2", args.benches[1], "T2 — new held-out set (67 random moves, every visible view)")):
@@ -135,7 +155,7 @@ for tag, bench, title in (("test_t1", args.benches[0], "T1 — original benchmar
         if r:
             L.append(r)
     # breakdowns for the main methods
-    main = [m for m in ms if m in ("P1", "P2", "rc", "agree") or not m in HAND and "sim" not in m]
+    main = [m for m in ms if m in ("P1", "P2", "rc", "agree") or m in LIT or not m in HAND and "sim" not in m and "_v1" not in m and "gate" not in m]
     L += ["", f"### {tag}: median error (cm) by move size", "",
           "| method | " + " | ".join(f"{a}-{b} cm" for a, b in [(0, 5), (5, 10), (10, 20), (20, 45)]) + " |",
           "|---|" + "---|" * 4]
@@ -173,6 +193,47 @@ for tag, bench, title in (("test_t1", args.benches[0], "T1 — original benchmar
     for k in keys:
         rows_all.append(dict(set=tag, scene=k[0], trial=k[1], view=k[2], object=META[k]["object"], gt_cm=META[k]["gt_cm"],
                              err_cm={m: (None if (e := errs(E, GT, m, [k])) is None else round(float(e[0]), 2)) for m in ms}))
+# ── rendering metrics (eval_render.py) ──────────────────────────────────────────
+RK = ("psnr_roi", "ssim_roi", "lpips_roi", "iou")
+for tag, bench in (("T1", args.benches[0]), ("T2", args.benches[1])):
+    rows = [json.loads(l) for sd in sorted(Path(bench).iterdir()) if (sd / "eval_render.jsonl").exists()
+            for l in open(sd / "eval_render.jsonl")]
+    if not rows:
+        continue
+    by = defaultdict(dict)
+    for r in rows:
+        m = r["method"]
+        for run in sorted(args.runs, key=len, reverse=True):     # "r18crop" before "r18"
+            if run in m:
+                m = m.replace(run, LAB[run]); break
+        by[m][(r["scene"], r["trial"], r["view"])] = r
+    E, _, _ = load_set("test_" + tag.lower(), bench)          # derived rules pick one component per input → reuse its row
+    for k, est in E.items():
+        for dm, d in est.items():
+            if not ("→" in dm or "/" in dm) or d is None or k in by[dm]:
+                continue
+            for comp in ("cotracker", "agree") + tuple(f"{LAB[r]}+rc" for r in args.runs):
+                if est.get(comp) is not None and np.allclose(est[comp], d) and k in by.get(comp, {}):
+                    by[dm][k] = dict(by[comp][k], method=dm); break
+    base = [m for m in by if by[m] and not ("→" in m or "/" in m)]
+    common = set.intersection(*(set(by[m]) for m in base))
+    by = {m: v for m, v in by.items() if m in base or (v and common <= set(v))}   # derived rows only if complete
+    order = ["gt"] + [m for m in HAND if m in by] + sorted(m for m in by if m not in HAND and m != "gt")
+    L += ["", f"## Rendering metrics — {tag} ({len(common)} inputs rendered by every method)", "",
+          "The object's Gaussians are moved by the estimate and every view is rendered and compared with the real AFTER "
+          "photo. ROI = dilated union of the true BEFORE/AFTER object masks; LPIPS on the ROI bounding box; IoU = rendered "
+          "visible silhouette vs. true AFTER mask. 'novel' = mean over the other views that see the object. "
+          "gt = true displacement (ceiling for this GG model + selection). ↑ higher is better, ↓ lower is better.", "",
+          "| method | err median cm | input PSNR-ROI ↑ | input SSIM-ROI ↑ | input LPIPS-ROI ↓ | input IoU ↑ | "
+          "novel PSNR-ROI ↑ | novel SSIM-ROI ↑ | novel LPIPS-ROI ↓ | novel IoU ↑ | novel PSNR full ↑ |",
+          "|---|" + "---|" * 10]
+    for m in order:
+        R = [by[m][k] for k in sorted(common)]
+        mean = lambda part, key: np.nanmean([np.nan if r[part].get(key) is None else r[part][key] for r in R])
+        L.append(f"| {m} | {np.median([r['err_cm'] for r in R]):.1f} | " +
+                 " | ".join(f"{mean('input', k):.3f}" if k != "psnr_roi" else f"{mean('input', k):.2f}" for k in RK) + " | " +
+                 " | ".join(f"{mean('novel', k):.3f}" if k != "psnr_roi" else f"{mean('novel', k):.2f}" for k in RK) +
+                 f" | {mean('novel', 'psnr'):.2f} |")
 open(OUT / "tables.md", "w").write("\n".join(L))
 with open(OUT / "per_input.jsonl", "w") as f:
     for r in rows_all:

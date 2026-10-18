@@ -68,9 +68,11 @@ def roma_match(a: np.ndarray, b: np.ndarray, n=5000):
 
 
 # ── MASt3R ──────────────────────────────────────────────────────────────────────
-def mast3r_pair(a: np.ndarray, b: np.ndarray, size=(512, 384)):
+def mast3r_pair(a: np.ndarray, b: np.ndarray, size=(512, 384), query: np.ndarray | None = None):
     """Both crops resized to `size` (W, H; multiples of 16). Returns z1, z2 (H, W) depth in camera-1 frame (camera did
-    not move, so z2 is image 2's depth), confidences, and reciprocal descriptor matches (xy at `size` resolution)."""
+    not move, so z2 is image 2's depth), confidences, and descriptor matches (xy at `size` resolution): reciprocal
+    nearest neighbours, or — with `query` (H, W bool) — one-way nearest neighbours of the query pixels of image 1
+    (reciprocal matching drops almost every match on a moved object)."""
     def make():
         sys.path[:0] = ["/root/mast3r", "/root/mast3r/dust3r"]
         from mast3r.model import AsymmetricMASt3R
@@ -86,7 +88,13 @@ def mast3r_pair(a: np.ndarray, b: np.ndarray, size=(512, 384)):
     out = inference([(prep(a, 0), prep(b, 1))], model, DEV, batch_size=1, verbose=False)
     p1, p2 = out["pred1"], out["pred2"]
     d1, d2 = p1["desc"][0].detach(), p2["desc"][0].detach()
-    m1, m2 = fast_reciprocal_NNs(d1, d2, subsample_or_initxy1=2, device=DEV, dist="dot", block_size=2 ** 13)
+    if query is None:
+        m1, m2 = fast_reciprocal_NNs(d1, d2, subsample_or_initxy1=2, device=DEV, dist="dot", block_size=2 ** 13)
+    else:
+        ys, xs = np.where(query[::2, ::2]); ys, xs = ys * 2, xs * 2
+        q = d1[torch.as_tensor(ys, device=d1.device), torch.as_tensor(xs, device=d1.device)]      # (N, C)
+        idx = torch.cat([(c @ d2.reshape(-1, d2.shape[-1]).T).argmax(1) for c in q.split(1024)]).cpu().numpy()
+        m1 = np.stack([xs, ys], 1); m2 = np.stack([idx % W, idx // W], 1)
     return dict(z1=p1["pts3d"][0, ..., 2].cpu().numpy(), z2=p2["pts3d_in_other_view"][0, ..., 2].cpu().numpy(),
                 c1=p1["conf"][0].cpu().numpy(), c2=p2["conf"][0].cpu().numpy(), m1=np.asarray(m1), m2=np.asarray(m2))
 
