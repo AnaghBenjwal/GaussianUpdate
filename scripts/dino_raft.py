@@ -198,6 +198,7 @@ def estimate_displacement_raft(
     object_mask: np.ndarray,
     device:      str = "cuda",
     min_mask_px: int = 20,
+    max_dim:     int = 960,
 ) -> Tuple[float, float, float, np.ndarray]:
     """
     Estimate 2D pixel displacement of an object using RAFT optical flow.
@@ -213,6 +214,9 @@ def estimate_displacement_raft(
     object_mask           : uint8 (H, W) — 1 where the object is
                             (typically DINO change mask ∩ GG object mask)
     min_mask_px           : if fewer masked pixels, return zero displacement
+    max_dim               : downsample images to this max dimension before RAFT
+                            to reduce GPU memory; flow is scaled back up.
+                            Set to 0 to disable.
 
     Returns
     -------
@@ -229,21 +233,39 @@ def estimate_displacement_raft(
         print(f"[dino_raft] Object mask has only {len(ys)} px — returning zero flow.")
         return 0.0, 0.0, 0.0, flow_viz
 
+    # Optionally downscale to fit RAFT in GPU memory (correlation volume ∝ (H×W)²)
+    scale = 1.0
+    if max_dim > 0 and max(H, W) > max_dim:
+        scale = max_dim / max(H, W)
+        rW = int(round(W * scale))
+        rH = int(round(H * scale))
+        before_raft = cv2.resize(before_rgb, (rW, rH), interpolation=cv2.INTER_LINEAR)
+        after_raft  = cv2.resize(after_rgb,  (rW, rH), interpolation=cv2.INTER_LINEAR)
+        mask_raft   = cv2.resize(object_mask, (rW, rH), interpolation=cv2.INTER_NEAREST)
+        rys, rxs    = np.where(mask_raft > 0)
+    else:
+        before_raft, after_raft, mask_raft = before_rgb, after_rgb, object_mask
+        rH, rW = H, W
+        rys, rxs = ys, xs
+
     model = _get_raft(device)
-    t_b = _to_raft_tensor(before_rgb, device)
-    t_a = _to_raft_tensor(after_rgb,  device)
+    t_b = _to_raft_tensor(before_raft, device)
+    t_a = _to_raft_tensor(after_raft,  device)
 
     with torch.no_grad():
         flow_list = model(t_b, t_a)
-        flow = flow_list[-1]                   # (1, 2, H_pad, W_pad)
-        flow = flow[:, :, :H, :W]             # crop to original size
+        flow = flow_list[-1]                    # (1, 2, H_pad, W_pad)
+        flow = flow[:, :, :rH, :rW]            # crop to resize dims
 
-    flow_np = flow.squeeze(0).cpu().numpy()    # (2, H, W)
-    dx_field = flow_np[0]                      # (H, W)  horizontal
-    dy_field = flow_np[1]                      # (H, W)  vertical
+    flow_np = flow.squeeze(0).cpu().numpy()     # (2, rH, rW)
+    dx_field_r = flow_np[0]
+    dy_field_r = flow_np[1]
 
-    dx_samples = dx_field[ys, xs]
-    dy_samples = dy_field[ys, xs]
+    if len(rys) < min_mask_px:
+        return 0.0, 0.0, 0.0, flow_viz
+
+    dx_samples = dx_field_r[rys, rxs] / scale   # un-scale to original px
+    dy_samples = dy_field_r[rys, rxs] / scale
 
     dx_med = float(np.median(dx_samples))
     dy_med = float(np.median(dy_samples))
@@ -251,10 +273,14 @@ def estimate_displacement_raft(
     flow_std = float(np.std(np.stack([dx_samples, dy_samples], axis=1)))
     confidence = 1.0 / (1.0 + flow_std)
 
-    flow_viz = _flow_to_color(dx_field, dy_field)
+    # Upscale flow field for visualisation
+    dx_up = cv2.resize(dx_field_r / scale, (W, H), interpolation=cv2.INTER_LINEAR)
+    dy_up = cv2.resize(dy_field_r / scale, (W, H), interpolation=cv2.INTER_LINEAR)
+    flow_viz = _flow_to_color(dx_up, dy_up)
 
     print(
         f"[dino_raft] RAFT  dx={dx_med:+.1f}  dy={dy_med:+.1f} px  "
         f"std={flow_std:.2f}  conf={confidence:.3f}  mask_px={len(ys):,}"
+        + (f"  (scaled {W}×{H}→{rW}×{rH})" if scale < 1.0 else "")
     )
     return dx_med, dy_med, confidence, flow_viz
