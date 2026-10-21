@@ -140,7 +140,7 @@ L += ["Methods:", ""] + [f"- **{k}**: {v}" for k, v in DESC.items()] + [
     "then <model>+rc (both added after the T2 baseline run; threshold reused, not tuned).", ""]
 rows_all = []
 for tag, bench, title in (("test_t1", args.benches[0], "T1 — original benchmark (37 moves, 1 input view each; methods were tuned on it)"),
-                          ("test_t2", args.benches[1], "T2 — new held-out set (67 random moves, every visible view)")):
+                          ("test_t2", args.benches[1], "T2 — held-out random moves, every visible view")):
     E, GT, META = load_set(tag, bench)
     keys = sorted(k for k in E if "rc" in E[k])
     if not keys:
@@ -206,6 +206,9 @@ for tag, bench in (("T1", args.benches[0]), ("T2", args.benches[1])):
         for run in sorted(args.runs, key=len, reverse=True):     # "r18crop" before "r18"
             if run in m:
                 m = m.replace(run, LAB[run]); break
+        else:
+            if m not in HAND + ["gt"]:                        # a learned run that is not being summarised
+                continue
         by[m][(r["scene"], r["trial"], r["view"])] = r
     E, _, _ = load_set("test_" + tag.lower(), bench)          # derived rules pick one component per input → reuse its row
     for k, est in E.items():

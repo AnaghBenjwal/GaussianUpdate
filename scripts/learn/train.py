@@ -12,6 +12,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import data as D
 from data import DispDataset
 from model import DispNet, laplace_nll
 
@@ -21,7 +22,7 @@ def evaluate(model, loader, dev):
     E, B = [], []
     with torch.no_grad():
         for b in loader:
-            mu, logb = model(b["x"].to(dev, non_blocking=True), b["g"].to(dev))
+            mu, logb = model(b["x"].to(dev, non_blocking=True).float(), b["g"].to(dev))
             E.append((mu.float().cpu() - b["y"]).norm(dim=1)); B.append(logb.float().exp().cpu())
     e = torch.cat(E).numpy() * 100
     return dict(median_cm=float(np.median(e)), mean_cm=float(e.mean()), lt5=float((e < 5).mean()), lt10=float((e < 10).mean()))
@@ -39,13 +40,19 @@ def main():
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--norm", default="crop", choices=["crop", "fixed"])
     ap.add_argument("--limit", type=int, default=0, help="debug: use only N training samples")
+    ap.add_argument("--arch", default="r18", choices=["r18", "r34", "r50"])
+    ap.add_argument("--res", type=int, default=256, help="model input size")
+    ap.add_argument("--planar", action="store_true", help="predict only the floor-plane move (dy = 0)")
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--preload", action="store_true", help="decode all samples into RAM once and build the val inputs once")
     args = ap.parse_args()
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
     json.dump(vars(args), open(out / "args.json", "w"), indent=1)
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-    torch.manual_seed(0)
+    torch.manual_seed(args.seed)
+    D.RES = args.res                                          # inherited by the (forked) DataLoader workers
 
-    tr = DispDataset([Path(args.data) / s for s in args.train.split(",")], train=True, norm=args.norm)
+    tr = DispDataset([Path(args.data) / s for s in args.train.split(",")], train=True, norm=args.norm, seed=args.seed)
     va = DispDataset([Path(args.data) / s for s in args.val.split(",")], train=False, norm=args.norm)
     if args.limit:
         tr.dirs = tr.dirs[:args.limit]; va.dirs = va.dirs[:max(8, args.limit // 4)]
@@ -53,7 +60,13 @@ def main():
     mk = lambda ds, sh: torch.utils.data.DataLoader(ds, batch_size=args.bs, shuffle=sh, num_workers=args.workers,
                                                     pin_memory=dev == "cuda", drop_last=sh, persistent_workers=False)
     vl = mk(va, False)
-    model = DispNet(norm=args.norm).to(dev)
+    if args.preload:                                          # val inputs are deterministic: build them once
+        t0 = time.time()
+        tr.preload()
+        vb = list(vl)
+        vl = [dict(x=b["x"].half(), g=b["g"], y=b["y"]) for b in vb]; del vb
+        print(f"preloaded in {time.time() - t0:.0f} s", flush=True)
+    model = DispNet(norm=args.norm, arch=args.arch, planar=args.planar).to(dev)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     steps = args.epochs * max(1, len(tr) // args.bs)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1, s / 500) * 0.5 * (1 + math.cos(math.pi * min(s, steps) / steps)))
@@ -68,7 +81,7 @@ def main():
             x, g, y = b["x"].to(dev, non_blocking=True), b["g"].to(dev), b["y"].to(dev)
             with torch.autocast(dev, dtype=torch.bfloat16, enabled=dev == "cuda"):
                 mu, logb = model(x, g)
-            loss = laplace_nll(mu.float(), logb.float(), y)
+            loss = laplace_nll(mu.float(), logb.float(), y, planar=args.planar)
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.unscale_(opt); torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)

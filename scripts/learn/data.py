@@ -23,7 +23,7 @@ import torch
 from PIL import Image
 
 cv2.setNumThreads(0)                                          # one thread per DataLoader worker
-RES = 256
+RES = 256                                                     # model input size; train/predict may override (data.RES = ...)
 C_IN, G_IN = 11, 5
 POINT_SCALE = 0.5
 CROP_SCALE = 1.3
@@ -207,6 +207,10 @@ class DispDataset(torch.utils.data.Dataset):
         self.dirs = sorted(p.parent for r in roots for p in Path(r).glob("*/*/meta.json"))
         self.train, self.seed, self.epoch = train, seed, 0
         self.cache = {} if cache else None
+
+    def preload(self):
+        """Decode every sample once in this process; forked DataLoader workers share the arrays (copy-on-write)."""
+        self.cache = {i: load_sample(d) for i, d in enumerate(self.dirs)}
 
     def __len__(self):
         return len(self.dirs)

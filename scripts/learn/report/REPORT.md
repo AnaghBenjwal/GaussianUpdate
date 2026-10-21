@@ -1,4 +1,4 @@
-# Object displacement after a move — literature baselines vs. our methods (final)
+# Object displacement after a move — literature baselines vs. our methods (final, v3)
 
 Task: a GG model of a kitchen exists; one object is moved on its support surface. Given a real BEFORE and AFTER
 photo from one camera (plus the GG model), estimate the object's 3D displacement δ. Identification is fixed to the
@@ -9,136 +9,139 @@ true class (2-image identification is 100 % on T1) so only the displacement stag
   compared with the real AFTER photo — PSNR / SSIM / LPIPS in the object region and silhouette IoU against the true
   AFTER mask, on the input view and on the *novel* views (the other cameras that see the object).
 
-## Test sets
-| set | moves | inputs | scenes | |δ| | notes |
-|---|---|---|---|---|---|
-| T1 | 37 | 37 (frame_00000 only) | FloorPlan1, 3 | 15 / 30 cm, fixed directions | original benchmark; our hand-built rules were tuned on it |
-| T2 | 67 | 368 (every view that sees the object) | FloorPlan1, 3 | random 3–40 cm, random direction (median 7.3) | generated after all design choices were frozen → the held-out test |
+**What changed since v2 (2026-10-18 report):** the test set grew from 2 to 5 kitchens (GG models trained for
+FloorPlan2, 4, 5), the data split was redone (validation = FloorPlan10–15), and DispNet was retrained with two
+changes chosen on validation (v3). All methods were re-run on the new test scenes.
 
-DispNet never saw FloorPlan1 or FloorPlan3 (training: 10,267 samples from FloorPlan6–30; model selection on
-FloorPlan2/4/5).
+## Data split
+| split | scenes | samples / inputs | used for |
+|---|---|---|---|
+| train | FloorPlan6, 7, 9, 16–30 (18 kitchens) | 7,735 simulator samples | DispNet training |
+| validation | FloorPlan10–15 (6 kitchens) | 2,532 simulator samples | choosing the DispNet variant and TTA |
+| test T1 | FloorPlan1, 3 | 37 moves, 37 inputs (frame_00000) | original benchmark; the hand-built rules were tuned on it |
+| test T2 | FloorPlan1–5 | 172 random moves, 891 inputs (every view that sees the object) | held-out test |
 
-## Methods compared
-**Literature baselines** (adapted to the task — each turns its native output into a 3D object translation):
+FloorPlan8 is empty. FloorPlan6–10 are reserved as a possible later test set. They are in train and validation
+now, so they cannot be used as test data for this model. The T2 moves on FloorPlan2/4/5 (105 moves, 523 inputs) were
+generated after every design choice was frozen, including the proposed pipeline. They are the clean confirmation
+the v2 report asked for.
 
-| name | method | adaptation |
-|---|---|---|
-| iNeRF | Yen-Chen et al., IROS 2021 | gradient descent on the object translation through the differentiable GG render, photometric loss in the object region |
-| LightGlue+PnP | DISK + LightGlue (ICCV 2023) → PnP-RANSAC; = pose step of 3DGS-CD (RA-L 2025) | BEFORE-photo 3D points from GG depth on the object, matched to the AFTER photo |
-| RoMa+PnP | RoMa (CVPR 2024) dense matches → PnP-RANSAC | as above |
-| CoTracker3 | Karaev et al., 2024, offline point tracker | tracks object points through a BEFORE→AFTER clip, lifts them to the support plane, RANSAC |
-| ICP | Besl & McKay 1992, point-to-point | BEFORE points from GG depth vs. AFTER points from a SAM mask + Depth Anything V2 depth (aligned to GG) |
-| MASt3R | Leroy et al., ECCV 2024 | metric pointmaps of the pair (scaled to GG) + descriptor matches on the object, 3D differences + RANSAC |
+## DispNet v3 — variants compared on validation (FloorPlan10–15)
+| variant | change | val mean cm | val median cm | <10 cm |
+|---|---|---|---|---|
+| base | v2 architecture (ResNet-18), retrained on the new split | 2.78 | 1.61 | 96 % |
+| planar | predict only the floor-plane move (dy = 0) | 1.94 | 1.07 | 98 % |
+| r34 | ResNet-34 backbone | 2.30 | 1.33 | 97 % |
+| res384 | 384 px input | – | – | – |
+| planar + r34 | both | 1.75 | – | – |
+| **planar + r34 + flip TTA = v3** | average with the horizontally flipped input | **1.67** | **0.89** | **98.7 %** |
 
-Not run: **FoundationPose** (needs an object mesh and a depth image of the AFTER scene, plus nvdiffrast/kaolin builds
-on CUDA 13 — not feasible in the time available).
+res384 ran out of the container's 45.8 GB RAM limit during data preloading and was not retried. On the 368 T2
+inputs of FloorPlan1/3, v3 alone improves over v2 (median 2.8 → 2.0 cm, mean 4.0 → 3.7 cm). It does so despite six fewer
+training scenes. Inside the proposed pipeline the difference is negligible (mean 1.40 vs. 1.41 cm), because the
+model is only used when CoTracker3 gives no answer. Network time: 7.9 ms for both TTA passes on an RTX 3090; with
+input building ≈ 0.03 s.
 
-**Ours**: P1/P2 (the existing pipelines), the hand-built cues, global render-and-compare (rc), the agree rule, and
-the learned model **DispNet v2** (ResNet-18 on an 11-channel crop, crop-normalised output, Laplace NLL), alone and
-with a local render-and-compare refinement (±8 cm around its prediction).
-
-## Main result — T2 (held out), 95 % CIs from resampling moves
+## Main result — T2 (FloorPlan1–5, 891 inputs, 172 moves), 95 % CIs from resampling moves
 
 | method | median cm | mean cm | <2 cm | <10 cm | no answer | time / input |
 |---|---|---|---|---|---|---|
-| no update | 7.3 | 11.0 | 0 % | 60 % | – | – |
-| P1 current pipeline | 6.6 | 48.4 | 15 % | 60 % | – | 0.4 s |
-| *iNeRF* | 5.1 | 9.0 [7.1–11.2] | 30 % | 72 % [64–80] | 0 | 8.7 s |
-| *LightGlue + PnP* | 3.5 | 7.0 [5.3–8.8] | 38 % | 73 % [64–82] | 151 | 0.05 s |
-| *RoMa + PnP* | 1.5 | 7.3 [4.4–11.4] | 56 % | 79 % [69–87] | 36 | 0.75 s |
-| *CoTracker3* | **0.3** | 1.9 [0.9–3.1] | 88 % | 92 % [86–98] | 33 | 0.37 s |
-| *ICP (DA-V2 + SAM)* | 5.2 | 10.7 [8.1–14.4] | 11 % | 74 % [68–80] | 94 | 1.0 s |
-| *MASt3R* | 7.7 | 11.4 [9.4–13.5] | 0 % | 58 % [44–70] | 351 | 1.0 s |
-| global rc | 0.6 | 3.5 [2.1–5.1] | 74 % | 87 % [79–94] | 0 | 7.4 s |
-| agree rule (4 cues + rc) | 0.5 | 1.7 [1.2–2.4] | 82 % | 96 % [93–99] | 0 | ≈ 10 s |
-| DispNet v2 | 2.8 | 4.0 [3.3–4.8] | 38 % | 92 % [87–96] | 0 | 0.025 s |
-| DispNet v2 + local rc | 0.6 | 2.2 [1.5–3.1] | 77 % | 94 % [89–98] | 0 | 2.3 s |
-| **CoTracker3 → DispNet v2 + local rc (proposed)** | **0.3** | **1.4 [0.7–2.3]** | **90 %** | **95 % [91–99]** | 0 | **≈ 0.6 s** |
+| no update | 8.3 | 11.2 | 0 % | 59 % | – | – |
+| P1 current pipeline | 9.9 | 55.0 | 11 % | 51 % | – | 0.45 s |
+| *iNeRF* | 4.8 | 9.3 [7.8–10.9] | 29 % | 71 % [65–76] | 0 | 12.6 s |
+| *LightGlue + PnP* | 3.7 | 7.7 | 38 % | 71 % | 318 | 0.08 s |
+| *RoMa + PnP* | 1.5 | 7.2 [5.6–9.1] | 53 % | 75 % [69–81] | 108 | 1.15 s |
+| *CoTracker3* | **0.3** | 2.2 [1.6–3.0] | 86 % | 93 % [89–96] | 75 | 0.53 s |
+| *ICP (DA-V2 + SAM)* | 5.4 | 14.1 | 11 % | 71 % | 208 | 1.44 s |
+| *MASt3R* | 8.8 | 11.6 | 1 % | 57 % | 826 | 1.65 s |
+| global rc | 0.5 | 3.8 [2.8–4.8] | 72 % | 88 % [83–92] | 0 | 7.9 s |
+| agree rule (4 cues + rc) | 0.5 | 1.8 [1.4–2.3] | 80 % | 96 % [94–98] | 0 | ≈ 10 s |
+| agree + DispNet v3 (5 cues + rc) | 0.5 | 1.6 [1.3–2.0] | 81 % | 97 % [96–98] | 0 | ≈ 10 s |
+| DispNet v3 | 2.6 | 4.1 [3.6–4.7] | 41 % | 90 % [87–93] | 0 | 0.03 s |
+| DispNet v3 + local rc | 0.6 | 2.3 [1.9–2.9] | 75 % | 94 % [91–96] | 0 | 2.3 s |
+| **CoTracker3 → DispNet v3 + local rc (proposed)** | **0.3** | **1.6 [1.2–2.1]** | **88 %** | **95 % [93–97]** | 0 | **≈ 0.7 s** |
 
-(*italics* = literature baselines.) Proposed = use the CoTracker3 estimate; when it gives no answer (9 % of T2
-inputs), use DispNet v2 refined by local rc. Expected runtime 0.37 s + 0.09 × (0.025 + 2.3) s. Local rc was timed
-on 58 T2 inputs: 2.3 s mean vs. 3.9 s for a global rc on the same inputs and GPU.
+(*italics* = literature baselines.) Proposed = use the CoTracker3 estimate; when it gives no answer (8.4 % of T2
+inputs), use DispNet v3 refined by local rc. Expected runtime 0.53 s + 0.084 × (0.03 + 2.3) s. Runtimes were measured on
+this run's GPU, which had only 1.9 CPU cores, so the CPU-bound steps are slower than in the v2 report.
+
+**Fresh scenes only (FloorPlan2/4/5, 523 inputs, 105 moves; nothing was ever chosen on them):** proposed median
+0.37 cm, mean 1.77 cm [1.26–2.42], 95 % < 10 cm. CoTracker3 alone: 0.37 / 2.46 cm. agree: 0.47 / 1.88 cm. The
+ranking is the same as on all of T2. Full numbers are in `bootstrap.md`.
 
 **Paired differences of the proposed pipeline (mean error, cm; negative = proposed better):**
 
-| vs. | T2 | T1 |
-|---|---|---|
-| CoTracker3 alone (best literature baseline) | −0.47 [−0.95, −0.11] | −1.34 [−3.29, −0.05] |
-| RoMa + PnP | −5.93 [−9.86, −3.13] | −5.92 [−9.68, −2.74] |
-| global rc | −2.10 [−3.30, −1.17] | −4.01 [−7.43, −0.59] |
-| DispNet v2 + local rc | −0.80 [−1.10, −0.55] | −1.99 [−3.55, −0.59] |
-| agree rule | −0.31 [−0.78, +0.15] (tie) | +0.61 [−0.75, +2.62] (tie) |
+| vs. | T2 all (FP1–5) | T2 fresh (FP2/4/5) | T1 |
+|---|---|---|---|
+| CoTracker3 alone (best literature baseline) | −0.59 [−1.04, −0.27] | −0.68 [−1.36, −0.20] | −1.54 [−3.53, −0.00] |
+| RoMa + PnP | −5.60 [−7.36, −4.14] | −5.36 [−6.88, −3.99] | −6.13 [−9.89, −3.00] |
+| global rc | −2.13 [−3.01, −1.38] | −2.15 [−3.38, −1.13] | −4.21 [−7.62, −0.75] |
+| DispNet v3 + local rc | −0.71 [−1.09, −0.37] | −0.71 [−1.31, −0.19] | −1.71 [−3.23, −0.41] |
+| agree rule | −0.19 [−0.48, +0.11] (tie) | −0.11 [−0.49, +0.31] (tie) | +0.40 [−1.22, +2.48] (tie) |
+| agree + DispNet v3 | +0.03 [−0.26, +0.34] (tie) | +0.16 [−0.26, +0.59] (tie) | +0.33 [−1.27, +2.44] (tie) |
 
-## Rendering metrics — T2 (all 368 inputs)
+## Rendering metrics — T2 (all 891 inputs)
 | method | err median | input PSNR-ROI ↑ | input LPIPS-ROI ↓ | input IoU ↑ | novel PSNR-ROI ↑ | novel SSIM-ROI ↑ | novel LPIPS-ROI ↓ | novel IoU ↑ |
 |---|---|---|---|---|---|---|---|---|
-| gt δ (ceiling) | 0.0 | 22.89 | 0.124 | 0.813 | 23.00 | 0.769 | 0.121 | 0.815 |
-| no update | 7.3 | 15.93 | 0.245 | 0.361 | 16.01 | 0.442 | 0.244 | 0.358 |
-| P1 | 6.6 | 20.20 | 0.172 | 0.553 | 18.39 | 0.543 | 0.206 | 0.448 |
-| *iNeRF* | 5.1 | 20.86 | 0.166 | 0.613 | 19.27 | 0.576 | 0.192 | 0.521 |
-| *LightGlue + PnP* | 3.5 | 19.57 | 0.186 | 0.570 | 18.92 | 0.574 | 0.195 | 0.543 |
-| *RoMa + PnP* | 1.5 | 21.07 | 0.163 | 0.652 | 20.36 | 0.639 | 0.169 | 0.626 |
-| *CoTracker3* | 0.3 | 22.36 | 0.131 | 0.774 | 22.23 | 0.722 | 0.129 | 0.771 |
-| *ICP* | 5.2 | 18.52 | 0.177 | 0.606 | 17.72 | 0.498 | 0.203 | 0.522 |
-| *MASt3R* | 7.7 | 15.98 | 0.246 | 0.362 | 16.03 | 0.442 | 0.246 | 0.353 |
-| global rc | 0.6 | 21.86 | 0.139 | 0.734 | 21.37 | 0.677 | 0.142 | 0.720 |
-| agree | 0.5 | 22.16 | 0.129 | 0.784 | 21.73 | 0.694 | 0.132 | 0.769 |
-| DispNet v2 | 2.8 | 19.47 | 0.171 | 0.639 | 19.55 | 0.574 | 0.166 | 0.642 |
-| DispNet v2 + local rc | 0.6 | 22.06 | 0.131 | 0.772 | 21.59 | 0.684 | 0.135 | 0.752 |
-| **proposed** | 0.3 | **22.46** | **0.129** | 0.782 | **22.30** | **0.725** | **0.128** | **0.778** |
+| gt δ (ceiling) | 0.0 | 23.77 | 0.123 | 0.792 | 23.92 | 0.773 | 0.119 | 0.787 |
+| no update | 8.3 | 17.10 | 0.239 | 0.348 | 17.28 | 0.467 | 0.236 | 0.341 |
+| P1 | 9.9 | 20.64 | 0.184 | 0.462 | 19.14 | 0.553 | 0.210 | 0.375 |
+| *iNeRF* | 4.8 | 21.74 | 0.168 | 0.570 | 20.39 | 0.596 | 0.187 | 0.496 |
+| *LightGlue + PnP* | 3.7 | 20.69 | 0.179 | 0.546 | 20.10 | 0.595 | 0.186 | 0.513 |
+| *RoMa + PnP* | 1.5 | 21.75 | 0.165 | 0.595 | 21.23 | 0.645 | 0.169 | 0.569 |
+| *CoTracker3* | 0.3 | 22.97 | 0.133 | 0.731 | 22.92 | 0.719 | 0.131 | 0.724 |
+| *ICP* | 5.4 | 19.24 | 0.185 | 0.557 | 18.80 | 0.520 | 0.201 | 0.481 |
+| *MASt3R* | 8.8 | 17.17 | 0.240 | 0.351 | 17.31 | 0.468 | 0.238 | 0.340 |
+| global rc | 0.5 | 22.76 | 0.137 | 0.711 | 22.38 | 0.685 | 0.139 | 0.691 |
+| agree | 0.5 | 23.00 | 0.129 | 0.754 | 22.70 | 0.701 | 0.129 | 0.735 |
+| agree + DispNet v3 | 0.5 | 23.01 | **0.127** | **0.757** | 22.70 | 0.701 | **0.128** | 0.738 |
+| DispNet v3 | 2.6 | 20.57 | 0.166 | 0.616 | 20.67 | 0.592 | 0.160 | 0.617 |
+| DispNet v3 + local rc | 0.6 | 22.96 | 0.130 | 0.742 | 22.55 | 0.691 | 0.132 | 0.717 |
+| **proposed** | 0.3 | **23.14** | 0.130 | 0.746 | **23.06** | **0.724** | **0.128** | **0.738** |
 
-The rendering metrics rank the methods the same way as the displacement error. The proposed pipeline is closest to
-the gt-δ ceiling on the novel views (−0.7 dB PSNR-ROI, against −1.3 dB for agree and −3.4 dB for DispNet alone).
-Rendering metrics are noisier than displacement error: the GG model and object selection cap PSNR-ROI at ≈ 23 dB,
-and full-image PSNR barely moves (30.4 no update → 31.5 gt) because the object is a small part of the image. T1
-tables are in `tables.md`.
+The rendering metrics rank the methods the same way as the displacement error. The proposed pipeline is closest to the gt-δ
+ceiling on novel-view PSNR-ROI: −0.9 dB, against −1.2 dB for agree and −3.3 dB for DispNet alone. The proposed
+pipeline and agree + DispNet v3 are within noise of each other on every metric. T1 tables are in `tables.md`.
 
 ## Findings
-1. **CoTracker3 is the strongest literature baseline by far** (T2 median 0.3 cm, mean 1.9 cm). Dense tracking through
-   a 2-frame "video" plus our support-plane lifting already matches the hand-built agree rule. Its failure mode is
-   giving up (33 / 368 T2 inputs, 5 / 37 T1); 24 of the 33 T2 cases are the butter knife, and the moves it gives
-   up on are large (median 18 cm vs. 7 cm overall).
-2. **The other literature methods are far behind.** PnP methods depend on enough matches on the object: LightGlue gives
-   no answer on 41 % of T2 inputs, RoMa+PnP is good when it works (median 1.5 cm) but has a long tail.
-   iNeRF-style photometric descent gets stuck in local minima beyond ≈ 10 cm. ICP is limited by monocular depth.
-   **MASt3R fails on this task**: its matches on the moved object stay at the object's old pixel position (both with
-   reciprocal and with one-way matching), because the model assumes a static scene; it gives no answer on 95 % of
-   T2 inputs.
-3. **DispNet's value is robustness, not precision.** Alone it always answers and gets 92 % within 10 cm in 25 ms,
-   but its median error is 2.8 cm. With local rc it reaches 0.6 cm median.
-4. **Proposed final pipeline: CoTracker3, with DispNet v2 + local rc as the fallback when CoTracker3 gives no
-   answer.** It is significantly better than every literature baseline and than DispNet + local rc on both test
-   sets. It is statistically tied with the agree rule (T2 −0.3 cm, T1 +0.6 cm, both CIs include 0) while needing two
-   networks instead of four external models plus a global search, and ≈ 0.6 s per input instead of ≈ 10 s.
-   A stricter variant (also fall back when CoTracker3 and DispNet disagree by > 10 cm) is slightly worse (T2 mean
-   1.6 cm), so the plain fallback is preferred.
-5. **The existing pipelines (P1/P2) are unusable** for metric displacement (48–68 cm mean on T2).
-6. **Remaining weakness: thin objects.** On the butter knife (25 T2 inputs) the proposed pipeline has a 13.4 cm
-   median error (CoTracker3 gives up, and local rc pulls DispNet's 7.9 cm estimate the wrong way), while agree gets
-   4.3 cm and DispNet alone 7.9 cm. On the transparent glass bottle the proposed pipeline is best (0.9 cm vs. 3.2 cm
-   for agree). For thin objects, using DispNet without the rc refinement would be the better fallback; we did not
-   change the rule after seeing this.
+1. **The v2 conclusions hold on 2.5× more test data and on three unseen kitchens.** CoTracker3 is the strongest
+   literature baseline (T2 median 0.3 cm, mean 2.2 cm). The proposed pipeline (CoTracker3, DispNet v3 + local rc
+   when it gives no answer) is significantly better than every literature baseline and every single component, on
+   all of T2, on the fresh scenes alone and on T1.
+2. **The proposed pipeline ties the agree rule** in accuracy, both with and without DispNet as a fifth cue. It needs
+   ≈ 0.7 s per input instead of ≈ 10 s, and two networks instead of four external models plus a global search.
+   On the subset where global rc fails (107 T2 inputs) the proposed pipeline has the lowest median (1.2 cm), but
+   agree + DispNet v3 has the lowest mean (5.3 vs. 6.4 cm).
+3. **DispNet v3 is a better model than v2** (planar output + ResNet-34 + flip TTA; −27 % validation error from planar
+   alone). Its value in the pipeline is robustness: it always answers, 90 % within 10 cm on T2. As a fifth cue it
+   gives a small, significant gain for the agree rule (−0.22 cm [−0.43, −0.05]).
+4. **The other literature methods are far behind.** The PnP methods depend on enough matches on the object, and
+   iNeRF gets stuck beyond ≈ 10 cm. **MASt3R fails on this task** (its matches on the moved object stay at the old pixel
+   position; no answer on 93 % of T2).
+5. **The existing pipelines (P1/P2) are unusable** for metric displacement (55–101 cm mean on T2).
+6. **Remaining weakness: thin objects.** The butter knife has a median error of 13.0 cm on FloorPlan1/3 (25 inputs) and
+   3.1 cm on FloorPlan2/4/5 (22 inputs). The fork has 3.7 cm and the knife 5.0 cm. CoTracker3 often gives up on
+   them, and local rc can pull DispNet the wrong way.
 
 ## Caveats
-- **The proposed combination was chosen after seeing the T2 baseline results.** Its only parameter (the fallback
-  condition "CoTracker3 gives no answer") was not tuned. It is also the best non-agree option on T1 and is
-  significantly better than its components on both sets, so the choice is not a T2 artefact, but a fresh test set
-  would be the clean confirmation.
-- **T1 is small (37 inputs) and was used to design the hand rules**, so its numbers are optimistic for those methods.
 - **T2 views are correlated within a move**, so all CIs resample moves rather than views.
+- **T1 is small (37 inputs) and was used to design the hand rules**, so its numbers are optimistic for those methods.
 - **All data is synthetic** (AI2-THOR renders, GG models trained on them). Real-camera performance is untested.
-- **The literature methods are adaptations**, not their original systems; e.g. CoTracker3 and RoMa use our
-  support-plane lifting, and the PnP methods use GG depth. They are the strongest adaptations we could build in the
-  time available, and P1/P2 use the true class and real BEFORE photo.
-- **Runtimes were measured on a shared RTX 3090** and are indicative only.
+- **The literature methods are adaptations**, not their original systems: CoTracker3 and RoMa use our support-plane
+  lifting, and the PnP methods use GG depth.
+- **Runtimes are indicative only** (shared RTX 3090, 1.9 CPU cores).
+- The FloorPlan1/3 baseline and cue results are the v2-run results. They use the same GG models, test moves and code, so
+  they were not recomputed. Only the learned rows and their rendering rows are new on FloorPlan1/3.
 
 ## Files
 - `tables.md`: full tables (all methods, by move size, by object, rc-failure subset, rendering metrics for T1 and T2).
+- `bootstrap.md`: 95 % CIs and paired differences for T1, T2 and the fresh-scene subset.
 - `per_input.jsonl`: per-input errors for every method.
-- `eval/T1|T2/<scene>/`: raw per-input estimates (`eval_cues`, `eval_baselines`, `eval_learned_*`), rendering
-  metrics (`eval_render`), local-rc timing (`timing_local_rc`).
-- `runs/r18` (v1) and `runs/r18crop` (v2 = final DispNet): `best.pt` checkpoint, training log, predictions.
+- DispNet v3: `~/Documents/displacement_learn/runs/v3/` (`best.pt`, `args.json`, training log, predictions; `SOURCE` =
+  runs2/planar_r34 + TTA). All variant runs: `~/Documents/displacement_learn/runs2/`.
+- GG models: `~/Documents/vast_results/server_root/output/gg_FP{1..5}_fixed`.
+- Raw per-input estimates: `~/Documents/displacement_bench_t2/FloorPlan{1..5}/eval_*.jsonl` (T2) and
+  `~/Documents/displacement_bench_vast_v3/FloorPlan{1,3}/` (T1).
 
-Code is in `gaussian-grouping/scripts/learn/`: `train.py`, `predict.py`, `eval_methods.py` (our methods),
-`eval_baselines.py` (literature baselines), `eval_render.py` (rendering metrics), `time_local_rc.py`,
-`summarize_eval.py`, `bootstrap_ci.py`.
+Code is in `gaussian-grouping/scripts/learn/`: `train.py` (`--arch`, `--planar`, `--res`, `--preload`), `predict.py`
+(`--tta`), `eval_methods.py`, `eval_baselines.py`, `eval_render.py`, `summarize_eval.py`, `bootstrap_ci.py`.

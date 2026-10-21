@@ -11,6 +11,7 @@
 
 from scene.cameras import Camera
 import numpy as np
+from PIL import Image
 from utils.general_utils import PILtoTorch
 from utils.graphics_utils import fov2focal
 import torch
@@ -51,7 +52,9 @@ def loadCam(args, id, cam_info, resolution_scale):
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
                   image=gt_image, gt_alpha_mask=loaded_mask,
                   image_name=cam_info.image_name, uid=id, data_device=args.data_device,
-                  objects=torch.from_numpy(np.array(cam_info.objects)))
+                  objects=torch.from_numpy(np.array(cam_info.objects.resize(resolution, Image.NEAREST)  # masks follow the image downscale
+                                                    if cam_info.objects is not None and cam_info.objects.size != resolution
+                                                    else cam_info.objects)))
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args):
     camera_list = []

@@ -192,6 +192,7 @@ def training_report(iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, 
                 psnr_test /= len(config['cameras'])
                 l1_test /= len(config['cameras'])          
                 print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
+                print("[ITER {}] peak GPU memory {:.1f} GB".format(iteration, torch.cuda.max_memory_allocated() / 2**30))
                 if use_wandb:
                     wandb.log({config['name'] + "/loss_viewpoint - l1_loss": l1_test, config['name'] + "/loss_viewpoint - psnr": psnr_test})
         if use_wandb:
@@ -252,6 +253,8 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
+    if os.environ.get("GG_MEM_FRAC"):                      # cap this process's GPU memory so other jobs can share the GPU
+        torch.cuda.set_per_process_memory_fraction(float(os.environ["GG_MEM_FRAC"]))
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.use_wandb)
 
     # All done
